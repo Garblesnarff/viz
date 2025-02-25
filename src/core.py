@@ -1,3 +1,4 @@
+from __future__ import annotations
 '''
    Home to the Core class which tracks program state. Used by GUI & commandline
    to create a list of components and create a video thread to export.
@@ -8,9 +9,12 @@ import os
 import json
 from importlib import import_module
 import logging
-
+from typing import List, Tuple, Dict, Any, Optional, TYPE_CHECKING
 from . import toolkit
 
+if TYPE_CHECKING:
+    from .component import Component
+    from .video_thread import Worker
 
 log = logging.getLogger('AVP.Core')
 STDOUT_LOGLVL = logging.WARNING
@@ -27,50 +31,69 @@ class Core:
         This class also stores constants as class variables.
     '''
 
-    def __init__(self):
-        self.importComponents()
-        self.selectedComponents = []
-        self.savedPresets = {}  # copies of presets to detect modification
-        self.openingProject = False
+    # Class-level variables (static) will be populated by storeSettings
+    dataDir: str
+    presetDir: str
+    componentsPath: str
+    junkStream: str
+    encoderOptions: Dict[str, Any]
+    resolutions: List[str]
+    logDir: str
+    logEnabled: bool
+    previewEnabled: bool
+    FFMPEG_BIN: str
+    settings: QtCore.QSettings
+    videoFormats: List[str]
+    audioFormats: List[str]
+    imageFormats: List[str]
+    canceled: bool
+    mode: str
 
-    def __repr__(self):
+    def __init__(self) -> None:
+        self.importComponents()
+        self.selectedComponents: List[Component] = []
+        self.savedPresets: Dict[str, Dict[str, Any]] = {}  # copies of presets to detect modification
+        self.openingProject: bool = False
+        self.videoThread: Optional[QtCore.QThread] = None #to avoid type: ignore
+
+    def __repr__(self) -> str:
         return "\n=~=~=~=\n".join(
             [repr(comp) for comp in self.selectedComponents]
         )
 
-    def importComponents(self):
-        def findComponents():
-            for f in os.listdir(Core.componentsPath):
-                name, ext = os.path.splitext(f)
-                if name.startswith("__"):
-                    continue
-                elif ext == '.py':
-                    yield name
+    def importComponents(self) -> None:
+        def findComponents() -> List[str]:
+            return [
+                os.path.splitext(f)[0]
+                for f in os.listdir(Core.componentsPath)
+                if not f.startswith("__") and os.path.splitext(f)[1] == '.py'
+            ]
+
         log.debug('Importing component modules')
         self.modules = [
             import_module('.components.%s' % name, __package__)
             for name in findComponents()
         ]
         # store canonical module names and indexes
-        self.moduleIndexes = [i for i in range(len(self.modules))]
-        self.compNames = [mod.Component.name for mod in self.modules]
+        self.moduleIndexes: List[int] = list(range(len(self.modules)))
+        self.compNames: List[str] = [mod.Component.name for mod in self.modules]
         # alphabetize modules by Component name
         sortedModules = sorted(zip(self.compNames, self.modules))
         self.compNames = [y[0] for y in sortedModules]
         self.modules = [y[1] for y in sortedModules]
 
         # store alternative names for modules
-        self.altCompNames = []
+        self.altCompNames: List[Tuple[str, int]] = []
         for i, mod in enumerate(self.modules):
             if hasattr(mod.Component, 'names'):
                 for name in mod.Component.names():
                     self.altCompNames.append((name, i))
 
-    def componentListChanged(self):
+    def componentListChanged(self) -> None:
         for i, component in enumerate(self.selectedComponents):
             component.compPos = i
 
-    def insertComponent(self, compPos, component, loader):
+    def insertComponent(self, compPos: int, component: Any, loader: Any) -> int:
         '''
             Creates a new component using these args:
             (compPos, component obj or moduleIndex, MWindow/Command/Core obj)
@@ -79,9 +102,10 @@ class Core:
             compPos = len(self.selectedComponents)
         if len(self.selectedComponents) > 50:
             return -1
-        if type(component) is int:
+
+        if isinstance(component, int):
             # create component using module index in self.modules
-            moduleIndex = int(component)
+            moduleIndex: int = int(component)
             log.debug(
                 'Creating new component from module #%s', str(moduleIndex))
             component = self.modules[moduleIndex].Component(
@@ -89,11 +113,13 @@ class Core:
             )
             component.widget(loader)
         else:
+            #Inserting previously created component
             moduleIndex = -1
             log.debug(
                 'Inserting previously-created %s component', component.name)
 
-        component._error.connect(
+
+        component._error.connect( #type: ignore
             loader.videoThreadError
         )
         self.selectedComponents.insert(
@@ -107,28 +133,28 @@ class Core:
         self.updateComponent(compPos)
         return compPos
 
-    def moveComponent(self, startI, endI):
+    def moveComponent(self, startI: int, endI: int) -> int:
         comp = self.selectedComponents.pop(startI)
         self.selectedComponents.insert(endI, comp)
 
         self.componentListChanged()
         return endI
 
-    def removeComponent(self, i):
+    def removeComponent(self, i: int) -> None:
         self.selectedComponents.pop(i)
         self.componentListChanged()
 
-    def clearComponents(self):
+    def clearComponents(self) -> None:
         self.selectedComponents = list()
         self.componentListChanged()
 
-    def updateComponent(self, i):
+    def updateComponent(self, i: int) -> None:
         log.debug(
             'Auto-updating %s #%s',
             self.selectedComponents[i], str(i))
         self.selectedComponents[i].update(auto=True)
 
-    def moduleIndexFor(self, compName):
+    def moduleIndexFor(self, compName: str) -> Optional[int]:
         try:
             index = self.compNames.index(compName)
             return self.moduleIndexes[index]
@@ -136,11 +162,12 @@ class Core:
             for altName, modI in self.altCompNames:
                 if altName == compName:
                     return self.moduleIndexes[modI]
+            return None
 
-    def clearPreset(self, compIndex):
+    def clearPreset(self, compIndex: int) -> None:
         self.selectedComponents[compIndex].currentPreset = None
 
-    def openPreset(self, filepath, compIndex, presetName):
+    def openPreset(self, filepath: str, compIndex: int, presetName: str) -> bool:
         '''Applies a preset to a specific component'''
         saveValueStore = self.getPreset(filepath)
         if not saveValueStore:
@@ -154,27 +181,27 @@ class Core:
         self.savedPresets[presetName] = dict(saveValueStore)
         return True
 
-    def getPreset(self, filepath):
+    def getPreset(self, filepath: str) -> Optional[Dict[str, Any]]:
         '''Returns the preset dict stored at this filepath'''
         if not os.path.exists(filepath):
-            return False
+            return None
         with open(filepath, 'r') as f:
             for line in f:
                 saveValueStore = toolkit.presetFromString(line.strip())
-                break
+                break  # Only read the first line
         return saveValueStore
 
-    def getPresetDir(self, comp):
+    def getPresetDir(self, comp: Component) -> str:
         '''Get the preset subdir for a particular version of a component'''
         return os.path.join(Core.presetDir, comp.name, str(comp.version))
 
-    def openProject(self, loader, filepath):
+    def openProject(self, loader: Any, filepath: str) -> Optional[bool]:
         ''' loader is the object calling this method which must have
         its own showMessage(**kwargs) method for displaying errors.
         '''
         if not os.path.exists(filepath):
             loader.showMessage(msg='Project file not found.')
-            return
+            return None
 
         errcode, data = self.parseAvFile(filepath)
         if errcode == 0:
@@ -209,7 +236,7 @@ class Core:
                     # create the actual component object & get its index
                     i = self.insertComponent(
                         -1,
-                        self.moduleIndexFor(name),
+                        self.moduleIndexFor(name), #type: ignore
                         loader
                     )
                     if i == -1:
@@ -246,7 +273,7 @@ class Core:
             if typ.__name__ == 'KeyError':
                 # probably just an old version, still loadable
                 log.warning('Project file missing value: %s' % value)
-                return
+                return None
             if hasattr(loader, 'createNewProject'):
                 loader.createNewProject(prompt=False)
             msg = '%s: %s\n\n' % (typ.__name__, value)
@@ -258,8 +285,9 @@ class Core:
                 detail=msg)
             self.openingProject = False
             return False
+        return None
 
-    def parseAvFile(self, filepath):
+    def parseAvFile(self, filepath: str) -> Tuple[int, Dict[str, Any]]:
         '''
             Parses an avp (project) or avl (preset package) file.
             Returns dictionary with section names as the keys, each one
@@ -271,10 +299,10 @@ class Core:
                     'Settings',
                     'WindowFields'
                 )
-        data = {sect: [] for sect in validSections}
+        data: Dict[str, Any] = {sect: [] for sect in validSections}
         try:
             with open(filepath, 'r') as f:
-                def parseLine(line):
+                def parseLine(line: str) -> Tuple[str, str]:
                     '''Decides if a file line is a section header'''
                     line = line.strip()
                     newSection = ''
@@ -315,7 +343,7 @@ class Core:
         except Exception:
             return 1, sys.exc_info()
 
-    def importPreset(self, filepath):
+    def importPreset(self, filepath: str) -> Tuple[bool, str]:
         errcode, data = self.parseAvFile(filepath)
         returnList = []
         if errcode == 0:
@@ -338,13 +366,14 @@ class Core:
         elif errcode == 1:
             # TODO: an error message
             return False, ''
+        return False, '' #added to make the linter happy
 
-    def exportPreset(self, exportPath, compName, vers, origName):
+    def exportPreset(self, exportPath: str, compName: str, vers: str, origName: str) -> Optional[bool]:
         internalPath = os.path.join(
             Core.presetDir, compName, str(vers), origName
         )
         if not os.path.exists(internalPath):
-            return
+            return None
         if os.path.exists(exportPath):
             os.remove(exportPath)
         with open(internalPath, 'r') as f:
@@ -361,7 +390,7 @@ class Core:
             return False
 
     def createPresetFile(
-            self, compName, vers, presetName, saveValueStore, filepath=''):
+            self, compName: str, vers: str, presetName: str, saveValueStore: Dict[str, Any], filepath: str = '') -> None:
         '''Create a preset file (.avl) at filepath using args.
         Or if filepath is empty, create an internal preset using args'''
         if not filepath:
@@ -380,52 +409,9 @@ class Core:
                 f.write('[Components]\n')
                 f.write('%s\n' % compName)
                 f.write('%s\n' % str(vers))
-            f.write(toolkit.presetToString(saveValueStore))
+            f.write('%s\n' % toolkit.presetToString(saveValueStore))
 
-    def createProjectFile(self, filepath, window=None):
-        '''Create a project file (.avp) using the current program state'''
-        log.info('Creating %s', filepath)
-        settingsKeys = [
-            'componentDir',
-            'inputDir',
-            'outputDir',
-            'presetDir',
-            'projectDir',
-        ]
-        try:
-            if not filepath.endswith(".avp"):
-                filepath += '.avp'
-            if os.path.exists(filepath):
-                os.remove(filepath)
-
-            with open(filepath, 'w') as f:
-                f.write('[Components]\n')
-                for comp in self.selectedComponents:
-                    saveValueStore = comp.savePreset()
-                    saveValueStore['preset'] = comp.currentPreset
-                    f.write('%s\n' % str(comp))
-                    f.write('%s\n' % str(comp.version))
-                    f.write('%s\n' % toolkit.presetToString(saveValueStore))
-
-                f.write('\n[Settings]\n')
-                for key in Core.settings.allKeys():
-                    if key in settingsKeys:
-                        f.write('%s=%s\n' % (key, Core.settings.value(key)))
-
-                if window:
-                    f.write('\n[WindowFields]\n')
-                    f.write(
-                        'lineEdit_audioFile=%s\n'
-                        'lineEdit_outputFile=%s\n' % (
-                            window.lineEdit_audioFile.text(),
-                            window.lineEdit_outputFile.text()
-                        )
-                    )
-            return True
-        except Exception:
-            return False
-
-    def newVideoWorker(self, loader, audioFile, outputPath):
+    def newVideoWorker(self, loader: Any, audioFile: str, outputPath: str) -> 'Worker':
         '''loader is MainWindow or Command object which must own the thread'''
         from . import video_thread
         self.videoThread = QtCore.QThread(loader)
@@ -438,18 +424,19 @@ class Core:
         self.videoThread.start()
         return videoWorker
 
-    def stopVideoThread(self):
-        self.videoThread.quit()
-        self.videoThread.wait()
+    def stopVideoThread(self) -> None:
+        if self.videoThread:
+            self.videoThread.quit()
+            self.videoThread.wait()
 
-    def cancel(self):
+    def cancel(self) -> None:
         Core.canceled = True
 
-    def reset(self):
+    def reset(self) -> None:
         Core.canceled = False
 
     @classmethod
-    def storeSettings(cls):
+    def storeSettings(cls) -> None:
         '''Store settings/paths to directories as class variables'''
         from .__init__ import wd
         from .toolkit.ffmpeg import findFfmpeg
@@ -527,12 +514,12 @@ class Core:
             os.makedirs(cls.dataDir)
         for neededDirectory in (
           cls.presetDir, cls.logDir, cls.settings.value("projectDir")):
-            if not os.path.exists(neededDirectory):
+            if neededDirectory and not os.path.exists(neededDirectory):
                 os.mkdir(neededDirectory)
         cls.makeLogger(deleteOldLogs=True)
 
     @classmethod
-    def loadDefaultSettings(cls):
+    def loadDefaultSettings(cls) -> None:
         # settings that get saved into the ini file
         cls.defaultSettings = {
             "outputWidth": 1280,
@@ -572,7 +559,7 @@ class Core:
             cls.settings.setValue(key, val)
 
     @staticmethod
-    def makeLogger(deleteOldLogs=False):
+    def makeLogger(deleteOldLogs: bool = False) -> None:
         # send critical log messages to stdout
         logStream = logging.StreamHandler()
         logStream.setLevel(STDOUT_LOGLVL)

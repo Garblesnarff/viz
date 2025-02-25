@@ -12,11 +12,16 @@ import glob
 import signal
 import shutil
 import logging
+from typing import List, Optional, Tuple, Dict, Any
 
 from . import core
 
-
 log = logging.getLogger('AVP.Commandline')
+
+
+class CommandError(Exception):
+    """Custom exception for command-line errors."""
+    pass
 
 
 class Command(QtCore.QObject):
@@ -26,18 +31,76 @@ class Command(QtCore.QObject):
 
     createVideo = QtCore.pyqtSignal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.core = core.Core()
         core.Core.mode = 'commandline'
-        self.dataDir = self.core.dataDir
-        self.canceled = False
-        self.settings = core.Core.settings
+        self.dataDir: str = self.core.dataDir
+        self.canceled: bool = False
+        self.settings: QtCore.QSettings = core.Core.settings
+        self.worker: Optional[Any] = None  # Replace Any with the actual type if possible
+        self.lastProgressUpdate: float = 0.0
 
         # ctrl-c stops the export thread
         signal.signal(signal.SIGINT, self.stopVideo)
 
-    def parseArgs(self):
+    def _parse_component_args(self, comp_args: List[List[str]]) -> None:
+        """Parses component arguments from the command line."""
+        for comp in comp_args:
+            pos, name, *compargs = comp  # Unpack directly
+            try:
+                pos_int = int(pos)
+            except ValueError:
+                raise CommandError(f"Invalid layer number: {pos}")
+
+            realName = self.parseCompName(name)
+            if not realName:
+                raise CommandError(f"Invalid component name: {name}")
+
+            modI = self.core.moduleIndexFor(realName)
+            if modI is None:  # Check for None explicitly
+                raise CommandError(f"Could not find module index for: {realName}")
+
+            i = self.core.insertComponent(pos_int, modI, self)
+            for arg in compargs:
+                self.core.selectedComponents[i].command(arg)
+
+
+    def _handle_project_file(self, proj_path_arg: str) -> None:
+        """Loads a project file and updates the component list."""
+
+        projPath = proj_path_arg
+        if not os.path.isabs(projPath):  # Use os.path.isabs for absolute path check
+            projPath = os.path.join(
+                self.settings.value("projectDir"),  # type: ignore
+                projPath
+            )
+        if not projPath.endswith('.avp'):
+            projPath += '.avp'
+
+        self.core.openProject(self, projPath)
+        # Reverse the order to match GUI behavior
+        self.core.selectedComponents = list(reversed(self.core.selectedComponents))
+        self.core.componentListChanged()
+
+    def _get_input_output_from_project(self, proj_path: str) -> Tuple[Optional[str], Optional[str]]:
+        """Extracts input and output file paths from a project file."""
+        errcode, data = self.core.parseAvFile(proj_path)
+        if errcode != 0:
+            return None, None  # Or raise an exception, depending on desired behavior
+
+        input_ = None
+        output = None
+        for key, value in data['WindowFields']:
+            if 'outputFile' in key:
+                output = value
+                if output and not os.path.isabs(output):
+                    output = os.path.join(os.path.expanduser('~'), output)
+            if 'audioFile' in key:
+                input_ = value
+        return input_, output
+
+    def parseArgs(self) -> str:
         parser = argparse.ArgumentParser(
             prog='avp' if os.path.basename(sys.argv[0]) == "__main__.py" else None,
             description='Create a visualization for an audio file',
@@ -46,7 +109,6 @@ class Command(QtCore.QObject):
                         '-c 0 image path=~/Pictures/thisWeeksPicture.jpg '
                         '-c 1 video "preset=My Logo" -c 2 vis layout=classic'
         )
-
 
         # input/output automatic-export commands
         parser.add_argument(
@@ -96,60 +158,22 @@ class Command(QtCore.QObject):
 
         if args.test:
             self.runTests()
-            quit(0)
+            sys.exit(0)  # Use sys.exit for consistency
 
         if args.projpath:
-            projPath = args.projpath
-            if not os.path.dirname(projPath):
-                projPath = os.path.join(
-                    self.settings.value("projectDir"),
-                    projPath
-                )
-            if not projPath.endswith('.avp'):
-                projPath += '.avp'
-            self.core.openProject(self, projPath)
-            self.core.selectedComponents = list(
-                reversed(self.core.selectedComponents))
-            self.core.componentListChanged()
+            self._handle_project_file(args.projpath)
+
 
         if args.comp:
-            for comp in args.comp:
-                pos = comp[0]
-                name = comp[1]
-                compargs = comp[2:]
-                try:
-                    pos = int(pos)
-                except ValueError:
-                    print(pos, 'is not a layer number.')
-                    quit(1)
-                realName = self.parseCompName(name)
-                if not realName:
-                    print(name, 'is not a valid component name.')
-                    quit(1)
-                modI = self.core.moduleIndexFor(realName)
-                i = self.core.insertComponent(pos, modI, self)
-                for arg in compargs:
-                    self.core.selectedComponents[i].command(arg)
+            self._parse_component_args(args.comp)
+
 
         if args.export_project and args.projpath:
-            errcode, data = self.core.parseAvFile(projPath)
-            input_ = None
-            output = None
-            for key, value in data['WindowFields']:
-                if 'outputFile' in key:
-                    output = value
-                    if output and not os.path.dirname(value):
-                        output = os.path.join(
-                            os.path.expanduser('~'),
-                            output
-                        )
-                if 'audioFile' in key:
-                    input_ = value
-
+            input_, output = self._get_input_output_from_project(args.projpath)
             # use input/output from project file, overwritten by -i and -o
             if (not input_ and not args.input) or (not output and not args.output):
                 parser.print_help()
-                quit(1)
+                raise CommandError("Missing input/output file specification.") #Consistent error handling
 
             self.createAudioVisualization(
                 input_ if not args.input else args.input,
@@ -164,18 +188,16 @@ class Command(QtCore.QObject):
         elif args.no_preview:
             core.Core.previewEnabled = False
 
-        elif (
-                args.projpath is None and 
-                'help' not in sys.argv and
-                '--debug' not in sys.argv and
-                '--test' not in sys.argv
-                ):
+        elif (args.projpath is None and
+              'help' not in sys.argv and
+              '--debug' not in sys.argv and
+              '--test' not in sys.argv):
             parser.print_help()
-            quit(1)
+            raise CommandError("No action specified.") #Consistent error handling
 
         return "GUI"
 
-    def createAudioVisualization(self, input, output):
+    def createAudioVisualization(self, input: str, output: str) -> None:
         if not self.core.selectedComponents:
             print("No components selected. Adding a default visualizer.")
             time.sleep(1)
@@ -192,13 +214,14 @@ class Command(QtCore.QObject):
         self.worker.progressBarSetText.connect(self.progressBarSetText)
         self.createVideo.emit()
 
-    def stopVideo(self, *args):
-        self.worker.error = True
-        self.worker.cancelExport()
-        self.worker.cancel()
+    def stopVideo(self, *args: Any) -> None:
+        if self.worker:
+            self.worker.error = True
+            self.worker.cancelExport()
+            self.worker.cancel()
 
     @QtCore.pyqtSlot(str)
-    def progressBarSetText(self, value):
+    def progressBarSetText(self, value: str) -> None:
         if 'Export ' in value:
             # Don't duplicate completion/failure messages
             return
@@ -214,27 +237,25 @@ class Command(QtCore.QObject):
         self.lastProgressUpdate = time.time()
 
     @QtCore.pyqtSlot()
-    def videoCreated(self):
-        self.quit(0)
+    def videoCreated(self) -> None:
+        sys.exit(0)
 
-    def quit(self, code):
-        quit(code)
 
-    def showMessage(self, **kwargs):
+    def showMessage(self, **kwargs: Any) -> None:
         print(kwargs['msg'])
         if 'detail' in kwargs:
             print(kwargs['detail'])
 
     @QtCore.pyqtSlot(str, str)
-    def videoThreadError(self, msg, detail):
+    def videoThreadError(self, msg: str, detail: str) -> None:
         print(msg)
         print(detail)
-        quit(1)
+        sys.exit(1)
 
-    def drawPreview(self, *args):
+    def drawPreview(self, *args: Any) -> None:
         pass
 
-    def parseCompName(self, name):
+    def parseCompName(self, name: str) -> Optional[str]:
         '''Deduces a proper component name out of a commandline arg'''
 
         if name.title() in self.core.compNames:
@@ -252,18 +273,16 @@ class Command(QtCore.QObject):
         for i, compFileName in enumerate(compFileNames):
             if name.lower() in compFileName:
                 return self.core.compNames[i]
-            return
+        return None  # Indicate that no match was found
 
-        return None
-
-    def runTests(self):
+    def runTests(self) -> None:
         from . import tests
         test_report = os.path.join(core.Core.logDir, "test_report.log")
         tests.run(test_report)
 
         # Choose a numbered location to put the output file
         logNumber = 0
-        def getFilename():
+        def getFilename() -> str:
             """Get a numbered filename for the final test report"""
             nonlocal logNumber
             name = os.path.join(os.path.expanduser('~'), "avp_test_report")
@@ -288,7 +307,7 @@ class Command(QtCore.QObject):
             with open(filename, "w") as f:
                 f.write(f"{'='*60} no debug log {'='*60}\n")
 
-        def concatenateLogs(logPattern):
+        def concatenateLogs(logPattern: str) -> None:
             nonlocal filename
             renderLogs = glob.glob(os.path.join(core.Core.logDir, logPattern))
             with open(filename, "a") as fw:

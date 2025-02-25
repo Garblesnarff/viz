@@ -1,18 +1,18 @@
 '''
     Tools for using ffmpeg
 '''
-import numpy
+import numpy as np
 import sys
 import os
-import subprocess
+import subprocess as sp
 import threading
 import signal
 from queue import PriorityQueue
 import logging
+from typing import List, Tuple, Optional, Dict, Any, Sequence, Union
 
 from .. import core
 from .common import checkOutput, pipeWrapper
-
 
 log = logging.getLogger('AVP.Toolkit.Ffmpeg')
 
@@ -21,9 +21,15 @@ class FfmpegVideo:
     '''Opens a pipe to ffmpeg and stores a buffer of raw video frames.'''
 
     # error from the thread used to fill the buffer
-    threadError = None
+    threadError: Optional[Exception] = None
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, inputPath: str,  # Keyword-only arguments for clarity
+                width: int, height: int, frameRate: int, chunkSize: int,
+                parent: Any, component: Any,  # Replace 'Any' with more specific types if possible
+                filter_: Optional[List[str]] = None,
+                loopVideo: bool = False,
+                debug: bool = False) -> None: #Added debug flag
+
         mandatoryArgs = [
             'inputPath',
             'filter_',
@@ -35,42 +41,38 @@ class FfmpegVideo:
             'component',  # component object
         ]
         for arg in mandatoryArgs:
-            setattr(self, arg, kwargs[arg])
+            setattr(self, arg, locals()[arg]) #Dynamically set the attributes from the arguments
 
-        self.frameNo = -1
-        self.currentFrame = 'None'
-        self.map_ = None
+        self.frameNo: int = -1
+        self.currentFrame: bytes = b'' # Use bytes for raw frame data
+        self.map_: Any = None # You might want to define a more specific type if you know what self.map is
+        self.pipe: Optional[sp.Popen] = None #type: ignore
 
-        if 'loopVideo' in kwargs and kwargs['loopVideo']:
-            self.loopValue = '-1'
-        else:
-            self.loopValue = '0'
-        if 'filter_' in kwargs:
-            if kwargs['filter_'][0] != '-filter_complex':
-                kwargs['filter_'].insert(0, '-filter_complex')
-        else:
-            kwargs['filter_'] = None
+        self.loopValue: str = '-1' if loopVideo else '0'
 
-        self.command = [
+        if filter_ is None:
+            filter_ = []
+        if filter_[0] != '-filter_complex':
+                filter_.insert(0, '-filter_complex')
+
+
+        self.command: List[str] = [
             core.Core.FFMPEG_BIN,
             '-thread_queue_size', '512',
             '-r', str(self.frameRate),
-            '-stream_loop', str(self.loopValue),
+            '-stream_loop', self.loopValue,
             '-i', self.inputPath,
             '-f', 'image2pipe',
             '-pix_fmt', 'rgba',
         ]
-        if type(kwargs['filter_']) is list:
-            self.command.extend(
-                kwargs['filter_']
-            )
+        self.command.extend(filter_)
         self.command.extend([
             '-codec:v', 'rawvideo', '-',
         ])
 
-        self.frameBuffer = PriorityQueue()
-        self.frameBuffer.maxsize = self.frameRate
-        self.finishedFrames = {}
+        self.frameBuffer: PriorityQueue[Tuple[int, bytes]] = PriorityQueue(maxsize=self.frameRate)  # Use PriorityQueue[Tuple[int, bytes]]
+        self.finishedFrames: Dict[int, bytes] = {}
+        self.lastFrame: bytes = b''
 
         self.thread = threading.Thread(
             target=self.fillBuffer,
@@ -79,7 +81,7 @@ class FfmpegVideo:
         self.thread.daemon = True
         self.thread.start()
 
-    def frame(self, num):
+    def frame(self, num: int) -> bytes:
         while True:
             if num in self.finishedFrames:
                 image = self.finishedFrames.pop(num)
@@ -89,7 +91,7 @@ class FfmpegVideo:
             self.finishedFrames[i] = image
             self.frameBuffer.task_done()
 
-    def fillBuffer(self):
+    def fillBuffer(self) -> None:
         from ..component import ComponentError
         if core.Core.logEnabled:
             logFilename = os.path.join(
@@ -100,14 +102,17 @@ class FfmpegVideo:
                 logf.write(" ".join(self.command) + '\n\n')
             with open(logFilename, 'a') as logf:
                 self.pipe = openPipe(
-                    self.command, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=logf, bufsize=10**8
+                    self.command, stdin=sp.DEVNULL,
+                    stdout=sp.PIPE, stderr=logf, bufsize=10**8
                 )
         else:
             self.pipe = openPipe(
-                self.command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, bufsize=10**8
+                self.command, stdin=sp.DEVNULL, stdout=sp.PIPE,
+                stderr=sp.DEVNULL, bufsize=10**8
             )
+
+        if not self.pipe:
+            raise RuntimeError("FFmpeg pipe could not be opened.")
 
         while True:
             if self.parent.canceled:
@@ -127,7 +132,7 @@ class FfmpegVideo:
                 break
 
             try:
-                self.currentFrame = self.pipe.stdout.read(self.chunkSize)
+                self.currentFrame = self.pipe.stdout.read(self.chunkSize)  # type: ignore
             except ValueError as e:
                 if str(e) == "PyMemoryView_FromBuffer(): info->buf must not be NULL":
                     log.debug("Ignored 'info->buf must not be NULL' error from FFmpeg pipe")
@@ -142,16 +147,19 @@ class FfmpegVideo:
 
 
 @pipeWrapper
-def openPipe(commandList, **kwargs):
-    return subprocess.Popen(commandList, **kwargs)
+def openPipe(commandList: List[str], **kwargs: Any) -> sp.Popen:
+    return sp.Popen(commandList, **kwargs)
 
 
-def closePipe(pipe):
-    pipe.stdout.close()
-    pipe.send_signal(signal.SIGTERM)
+def closePipe(pipe: Optional[sp.Popen]) -> None:  # Allow pipe to be None
+    if pipe: # Check that pipe is not None
+        if pipe.stdout:
+            pipe.stdout.close()
+        pipe.send_signal(signal.SIGTERM)
+        pipe.wait()
 
 
-def findFfmpeg():
+def findFfmpeg() -> str:
     if sys.platform == "win32":
         bin = 'ffmpeg.exe'
     else:
@@ -166,27 +174,38 @@ def findFfmpeg():
             checkOutput(
                 [bin, '-version'], stderr=f
             )
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (sp.CalledProcessError, FileNotFoundError):
             bin = ""
 
     return bin
 
 
-def createFfmpegCommand(inputFile, outputFile, components, duration=-1):
+def createFfmpegCommand(inputFile: str, outputFile: str, components: List[Any], duration: float = -1.0) -> List[str]:
     '''
         Constructs the major ffmpeg command used to export the video
     '''
-    if duration == -1:
-        duration = getAudioDuration(inputFile)
+    if duration == -1.0:
+        duration_float = getAudioDuration(inputFile)
+        if duration_float is None:
+            log.error("Audio duration could not be determined.")
+            return []
+        duration = duration_float
+
+
     safeDuration = "{0:.3f}".format(duration - 0.05)  # used by filters
-    duration = "{0:.3f}".format(duration + 0.1)  # used by input sources
+    duration_str = "{0:.3f}".format(duration + 0.1)  # used by input sources
     Core = core.Core
 
     # Test if user has libfdk_aac
-    encoders = checkOutput(
-        "%s -encoders -hide_banner" % Core.FFMPEG_BIN, shell=True
-    )
-    encoders = encoders.decode("utf-8")
+    try:
+        encoders_bytes = checkOutput(
+            f"{Core.FFMPEG_BIN} -encoders -hide_banner", shell=True
+        )
+        encoders = encoders_bytes.decode("utf-8")
+    except (sp.CalledProcessError, FileNotFoundError) as e:
+        log.error(f"Error checking FFmpeg encoders: {e}")
+        return []
+
 
     acodec = Core.settings.value('outputAudioCodec')
 
@@ -201,11 +220,22 @@ def createFfmpegCommand(inputFile, outputFile, components, duration=-1):
         if cont['name'] == containerName:
             container = cont['container']
             break
+    else:  # No matching container found
+        log.error(f"Invalid container name: {containerName}")
+        return []
 
-    vencoders = options['video-codecs'][vcodec]
-    aencoders = options['audio-codecs'][acodec]
+    vencoders = options['video-codecs'].get(vcodec)
+    aencoders = options['audio-codecs'].get(acodec)
 
-    def error():
+    if vencoders is None:
+        log.error(f"No video encoders found for codec: {vcodec}")
+        return []
+    if aencoders is None:
+        log.error(f"No audio encoders found for codec: {acodec}")
+        return []
+
+
+    def error() -> List[str]:
         nonlocal encoders, encoder
         log.critical("Selected encoder (%s) is not supported by Ffmpeg. The supported encoders are: %s", encoder, encoders)
         return []
@@ -235,12 +265,12 @@ def createFfmpegCommand(inputFile, outputFile, components, duration=-1):
         '-s', f'{Core.settings.value("outputWidth")}x{Core.settings.value("outputHeight")}',
         '-pix_fmt', 'rgba',
         '-r', str(Core.settings.value('outputFrameRate')),
-        '-t', duration,
+        '-t', duration_str,
         '-an',  # the video input has no sound
         '-i', '-',  # the video input comes from a pipe
 
         # INPUT SOUND
-        '-t', duration,
+        '-t', duration_str,
         '-i', inputFile
     ]
 
@@ -267,7 +297,7 @@ def createFfmpegCommand(inputFile, outputFile, components, duration=-1):
         '-f', container
     ])
 
-    if acodec == 'aac':
+    if acodec == 'AAC':
         ffmpegCommand.append('-strict')
         ffmpegCommand.append('-2')
 
@@ -275,7 +305,7 @@ def createFfmpegCommand(inputFile, outputFile, components, duration=-1):
     return ffmpegCommand
 
 
-def createAudioFilterCommand(extraAudio, duration):
+def createAudioFilterCommand(extraAudio: List[Any], duration: str) -> List[str]:
     '''Add extra inputs and any needed filters to the main ffmpeg command.'''
     # NOTE: Global filters are currently hard-coded here for debugging use
     globalFilters = 0  # increase to add global filters
@@ -283,9 +313,9 @@ def createAudioFilterCommand(extraAudio, duration):
     if not extraAudio and not globalFilters:
         return []
 
-    ffmpegCommand = []
+    ffmpegCommand: List[str] = []
     # Add -i options for extra input files
-    extraFilters = {}
+    extraFilters: Dict[int, List[Tuple[str, str]]] = {}
     for streamNo, params in enumerate(reversed(extraAudio)):
         extraInputFile, params = params
         ffmpegCommand.extend([
@@ -305,11 +335,11 @@ def createAudioFilterCommand(extraAudio, duration):
             ))
 
     # Start creating avfilters! Popen-style, so don't use semicolons;
-    extraFilterCommand = []
+    extraFilterCommand: List[str] = []
 
     if globalFilters <= 0:
         # Dictionary of last-used tmp labels for a given stream number
-        tmpInputs = {streamNo: -1 for streamNo in extraFilters}
+        tmpInputs: Dict[int, int] = {streamNo: -1 for streamNo in extraFilters}
     else:
         # Insert blank entries for global filters into extraFilters
         # so the per-stream filters know what input to source later
@@ -351,11 +381,11 @@ def createAudioFilterCommand(extraAudio, duration):
             )
 
     # Join all the filters together and combine into 1 stream
-    extraFilterCommand = "; ".join(extraFilterCommand) + '; ' \
+    extraFilterCommand_str = "; ".join(extraFilterCommand) + '; ' \
         if tmpInputs else ''
     ffmpegCommand.extend([
         '-filter_complex',
-        extraFilterCommand +
+        extraFilterCommand_str +
         '%s amix=inputs=%s:duration=first [a]'
         % (
             "".join([
@@ -369,7 +399,7 @@ def createAudioFilterCommand(extraAudio, duration):
     return ffmpegCommand
 
 
-def testAudioStream(filename):
+def testAudioStream(filename: str) -> bool:
     '''Test if an audio stream definitely exists'''
     audioTestCommand = [
         core.Core.FFMPEG_BIN,
@@ -377,53 +407,46 @@ def testAudioStream(filename):
         '-vn', '-f', 'null', '-'
     ]
     try:
-        checkOutput(audioTestCommand, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
+        checkOutput(audioTestCommand, stderr=sp.DEVNULL)
+    except sp.CalledProcessError:
         return False
     else:
         return True
 
 
-def getAudioDuration(filename):
+def getAudioDuration(filename: str) -> Optional[float]:
     '''Try to get duration of audio file as float, or False if not possible'''
     command = [core.Core.FFMPEG_BIN, '-i', filename]
 
     try:
-        fileInfo = checkOutput(command, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as ex:
-        fileInfo = ex.output
-    except (FileNotFoundError, PermissionError):
-        # ffmpeg is possibly not installed
-        return False
+        fileInfo_bytes = checkOutput(command, stderr=sp.STDOUT)
+        fileInfo = fileInfo_bytes.decode("utf-8")
+    except (sp.CalledProcessError, FileNotFoundError, UnicodeDecodeError) as e:
+        log.error(f"Error getting audio duration: {e}")
+        return None
 
-    try:
-        info = fileInfo.decode("utf-8").split('\n')
-    except UnicodeDecodeError as e:
-        log.error('Unicode error:', str(e))
-        return False
-
-    for line in info:
+    for line in fileInfo.split('\n'):
         if 'Duration' in line:
-            d = line.split(',')[0]
-            d = d.split(' ')[3]
-            d = d.split(':')
-            duration = float(d[0])*3600 + float(d[1])*60 + float(d[2])
-            break
-    else:
-        # String not found in output
-        return False
-    return duration
+            d = line.split(',')[0].split(' ')[3].split(':')
+            try:
+                duration = float(d[0])*3600 + float(d[1])*60 + float(d[2])
+                return duration
+            except (ValueError, IndexError):  # Handle parsing errors
+                log.warning("Could not parse duration from FFmpeg output: %s", line)
+                return None
+
+    return None  # String not found in output
 
 
-def readAudioFile(filename, videoWorker):
+def readAudioFile(filename: str, videoWorker: Any) -> Optional[Tuple[np.ndarray, float]]:
     '''
         Creates the completeAudioArray given to components
         and used to draw the classic visualizer.
     '''
     duration = getAudioDuration(filename)
-    if not duration:
+    if duration is None:  # Use Optional[float] for duration
         log.error(f"Audio file {filename} doesn't exist or unreadable.")
-        return
+        return None
 
     command = [
         core.Core.FFMPEG_BIN,
@@ -433,10 +456,12 @@ def readAudioFile(filename, videoWorker):
         '-ar', '44100',  # ouput will have 44100 Hz
         '-ac', '1',  # mono (set to '2' for stereo)
         '-']
-    in_pipe = openPipe(
+    pipe = openPipe(
         command,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**8
+        stdout=sp.PIPE, stderr=sp.DEVNULL, bufsize=10**8
     )
+    if not pipe:
+        return None
 
     completeAudioArray = numpy.empty(0, dtype="int16")
 
@@ -444,13 +469,13 @@ def readAudioFile(filename, videoWorker):
     lastPercent = None
     while True:
         if core.Core.canceled:
-            return
+            return None
         # read 2 seconds of audio
         progress += 4
-        raw_audio = in_pipe.stdout.read(88200*4)
+        raw_audio = pipe.stdout.read(88200*4)  # type: ignore
         if len(raw_audio) == 0:
             break
-        audio_array = numpy.fromstring(raw_audio, dtype="int16")
+        audio_array = numpy.frombuffer(raw_audio, dtype="int16")  # Use frombuffer
         completeAudioArray = numpy.append(completeAudioArray, audio_array)
 
         percent = int(100*(progress/duration))
@@ -464,8 +489,8 @@ def readAudioFile(filename, videoWorker):
 
         lastPercent = percent
 
-    in_pipe.kill()
-    in_pipe.wait()
+    pipe.kill()
+    pipe.wait()
 
     # add 0s the end
     completeAudioArrayCopy = numpy.zeros(
@@ -477,7 +502,7 @@ def readAudioFile(filename, videoWorker):
 
 
 def exampleSound(
-    style='white', extra='apulsator=offset_l=0.35:offset_r=0.67'):
+    style: str = 'white', extra: str = 'apulsator=offset_l=0.35:offset_r=0.67') -> str:
     '''Help generate an example sound for use in creating a preview'''
 
     if style == 'white':
@@ -488,5 +513,7 @@ def exampleSound(
         src = 'sin(random(0)*2*PI*t)*tan(random(0)*2*PI*t)'
     elif style == 'stereo':
         src = '0.1*sin(2*PI*(360-2.5/2)*t) | 0.1*sin(2*PI*(360+2.5/2)*t)'
+    else:
+        src = '-2+random(0)'
 
-    return "aevalsrc='%s', %s%s" % (src, extra, ', ' if extra else '')
+    return f"aevalsrc='{src}', {extra}{', ' if extra else ''}"

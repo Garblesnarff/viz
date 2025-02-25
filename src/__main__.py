@@ -3,15 +3,15 @@ import sys
 import logging
 import re
 import string
-
+from typing import Optional
 
 log = logging.getLogger('AVP.Main')
 
 
 def main() -> int:
     """Returns an exit code (0 for success)"""
-    proj = None
-    mode = 'GUI'
+    proj: Optional[str] = None  # Use Optional[str] because proj can be None
+    mode: str = 'GUI'
 
     # Determine whether we're in GUI or commandline mode
     if len(sys.argv) > 2:
@@ -36,8 +36,8 @@ def main() -> int:
     if mode == 'commandline':
         from .command import Command
 
-        main = Command()
-        mode = main.parseArgs()
+        main_command = Command()  # Renamed to avoid shadowing the main function
+        mode = main_command.parseArgs()
         log.debug("Finished creating command object")
 
     # Both branches here may occur in one execution:

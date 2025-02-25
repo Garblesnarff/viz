@@ -1,31 +1,33 @@
-from PyQt5 import QtGui
+from PyQt5 import QtGui, QtWidgets
 import logging
+from typing import List, Dict, Any, Tuple, Optional
 
 from ..component import Component
 from ..toolkit.frame import BlankFrame, FloodFrame, FramePainter, PaintColor
 
-
 log = logging.getLogger('AVP.Components.Color')
 
 
-class Component(Component):
+class Component(Component):  # Using the Component base class
     name = 'Color'
     version = '1.0.0'
 
-    def widget(self, *args):
-        self.x = 0
-        self.y = 0
+    def widget(self, *args: Any) -> None:
+        self.x: int = 0  # type: ignore
+        self.y: int = 0  # type: ignore
         super().widget(*args)
 
         # disable color #2 until non-default 'fill' option gets changed
         self.page.lineEdit_color2.setDisabled(True)
         self.page.pushButton_color2.setDisabled(True)
         self.page.spinBox_width.setValue(
-            int(self.settings.value("outputWidth")))
+            int(self.settings.value("outputWidth"))
+        )
         self.page.spinBox_height.setValue(
-            int(self.settings.value("outputHeight")))
+            int(self.settings.value("outputHeight"))
+        )
 
-        self.fillLabels = [
+        self.fillLabels: List[str] = [
             'Solid',
             'Linear Gradient',
             'Radial Gradient',
@@ -63,7 +65,7 @@ class Component(Component):
             'RG_start', 'RG_end', 'RG_centre',
         ])
 
-    def update(self):
+    def update(self) -> None:
         fillType = self.page.comboBox_fill.currentIndex()
         if fillType == 0:
             self.page.lineEdit_color2.setEnabled(False)
@@ -82,17 +84,17 @@ class Component(Component):
             self.page.pushButton_color2.setEnabled(False)
         self.page.fillWidget.setCurrentIndex(fillType)
 
-    def previewRender(self):
+    def previewRender(self) -> QtGui.QImage:
         return self.drawFrame(self.width, self.height)
 
-    def properties(self):
+    def properties(self) -> List[str]:
         return ['static']
 
-    def frameRender(self, frameNo):
+    def frameRender(self, frameNo: int) -> QtGui.QImage:
         log.debug("Color component is drawing frame #%s", frameNo)
         return self.drawFrame(self.width, self.height)
 
-    def drawFrame(self, width, height):
+    def drawFrame(self, width: int, height: int) -> QtGui.QImage:
         r, g, b = self.color1
         shapeSize = (self.sizeWidth, self.sizeHeight)
         # in default state, skip all this logic and return a plain fill
@@ -132,7 +134,7 @@ class Component(Component):
                 w, h,
                 self.RG_centre)
 
-        brush.setSpread(self.spread)
+        brush.setSpread(self.spread)  # type: ignore
         brush.setColorAt(0.0, PaintColor(*self.color1))
         if self.trans:
             brush.setColorAt(1.0, PaintColor(0, 0, 0, 0))
@@ -146,12 +148,12 @@ class Component(Component):
             self.sizeWidth, self.sizeHeight
         )
 
-        return image.finalize()
+        return image.finalize() # type: ignore
 
-    def commandHelp(self):
+    def commandHelp(self) -> None:
         print('Specify a color:\n    color=255,255,255')
 
-    def command(self, arg):
+    def command(self, arg: str) -> None:
         if '=' in arg:
             key, arg = arg.split('=', 1)
             if key == 'color':

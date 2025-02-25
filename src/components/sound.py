@@ -1,5 +1,6 @@
-from PyQt5 import QtGui, QtCore, QtWidgets
+from PyQt5 import QtWidgets
 import os
+from typing import List, Dict, Any, Tuple, Optional
 
 from ..component import Component
 from ..toolkit.frame import BlankFrame
@@ -9,7 +10,7 @@ class Component(Component):
     name = 'Sound'
     version = '1.0.0'
 
-    def widget(self, *args):
+    def widget(self, *args: Any) -> None:
         super().widget(*args)
         self.page.pushButton_sound.clicked.connect(self.pickSound)
         self.trackWidgets({
@@ -21,31 +22,32 @@ class Component(Component):
             'sound': None,
         })
 
-    def properties(self):
+    def properties(self) -> List[str]:
         props = ['static', 'audio']
-        if not os.path.exists(self.sound):
+        if not os.path.exists(self.sound): # type: ignore
             props.append('error')
         return props
 
-    def error(self):
-        if not self.sound:
+    def error(self) -> Optional[str]:
+        if not self.sound: # type: ignore
             return "No audio file selected."
-        if not os.path.exists(self.sound):
+        if not os.path.exists(self.sound): # type: ignore
             return "The audio file selected no longer exists!"
+        return None
 
-    def audio(self):
-        params = {}
-        if self.delay != 0.0:
-            params['adelay'] = '=%s' % str(int(self.delay * 1000.00))
-        if self.chorus:
+    def audio(self) -> Optional[Tuple[str, Dict[str, str]]]:
+        params: Dict[str, str] = {}
+        if self.delay != 0.0: # type: ignore
+            params['adelay'] = '=%s' % str(int(self.delay * 1000.00)) # type: ignore
+        if self.chorus: # type: ignore
             params['chorus'] = \
                 '=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3'
-        if self.volume != 1.0:
-            params['volume'] = '=%s:replaygain_noclip=0' % str(self.volume)
+        if self.volume != 1.0: # type: ignore
+            params['volume'] = '=%s:replaygain_noclip=0' % str(self.volume) # type: ignore
 
-        return (self.sound, params)
+        return (self.sound, params) # type: ignore
 
-    def pickSound(self):
+    def pickSound(self) -> None:
         sndDir = self.settings.value("componentDir", os.path.expanduser("~"))
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.page, "Choose Sound", sndDir,
@@ -56,10 +58,10 @@ class Component(Component):
             self.page.lineEdit_sound.setText(filename)
             self.mergeUndo = True
 
-    def commandHelp(self):
+    def commandHelp(self) -> None:
         print('Path to audio file:\n    path=/filepath/to/sound.ogg')
 
-    def command(self, arg):
+    def command(self, arg: str) -> None:
         if '=' in arg:
             key, arg = arg.split('=', 1)
             if key == 'path':

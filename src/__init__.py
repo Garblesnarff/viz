@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+from typing import Any
 
 
 __version__ = '2.0.0'
@@ -17,13 +18,14 @@ class Logger(logging.getLoggerClass()):
             ERROR       Any error that would interrupt the user
             CRITICAL    Things that really shouldn't happen at all
     '''
-    def __init__(self, name, level=logging.NOTSET):
+    def __init__(self, name: str, level: int = logging.NOTSET) -> None:
         super().__init__(name, level)
         logging.addLevelName(5, "VERBOSE")
 
-    def verbose(self, msg, *args, **kwargs):
+    def verbose(self, msg: str, *args: Any, **kwargs: Any) -> None:
         if self.isEnabledFor(5):
             self._log(5, msg, args, **kwargs)
+
 logging.setLoggerClass(Logger)
 logging.VERBOSE = 5
 

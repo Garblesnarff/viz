@@ -5,6 +5,7 @@ import math
 import subprocess
 import time
 import logging
+from typing import List, Dict, Any, Tuple, Optional
 
 from ..component import Component
 from ..toolkit.frame import BlankFrame, scale
@@ -21,14 +22,14 @@ class Component(Component):
     name = 'Spectrum'
     version = '1.0.1'
 
-    def widget(self, *args):
-        self.previewFrame = None
+    def widget(self, *args: Any) -> None:
+        self.previewFrame: Optional[QtGui.QImage] = None
         super().widget(*args)
-        self._image = BlankFrame(self.width, self.height)
-        self.chunkSize = 4 * self.width * self.height
-        self.changedOptions = True
-        self.previewSize = (214, 120)
-        self.previewPipe = None
+        self._image: Image.Image = BlankFrame(self.width, self.height)
+        self.chunkSize: int = 4 * self.width * self.height
+        self.changedOptions: bool = True
+        self.previewSize: Tuple[int, int] = (214, 120)
+        self.previewPipe: Optional[subprocess.Popen] = None
 
         if hasattr(self.parent, 'lineEdit_audioFile'):
             # update preview when audio file changes (if genericPreview is off)
@@ -61,10 +62,10 @@ class Component(Component):
         for widget in self._trackedWidgets.values():
             connectWidget(widget, lambda: self.changed())
 
-    def changed(self):
+    def changed(self) -> None:
         self.changedOptions = True
 
-    def update(self):
+    def update(self) -> None:
         filterType = self.page.comboBox_filterType.currentIndex()
         self.page.stackedWidget.setCurrentIndex(filterType)
         if filterType == 3:
@@ -76,7 +77,7 @@ class Component(Component):
         else:
             self.page.checkBox_mono.setEnabled(True)
 
-    def previewRender(self):
+    def previewRender(self) -> QtGui.QImage:
         changedSize = self.updateChunksize()
         if not changedSize \
                 and not self.changedOptions \
@@ -91,44 +92,45 @@ class Component(Component):
             log.warning(
                 'Spectrum #%s failed to create a preview frame' % self.compPos)
             self.previewFrame = None
-            return BlankFrame(self.width, self.height)
+            return QtGui.QImage() # Return a null QImage
         else:
             self.previewFrame = frame
             return frame
 
-    def preFrameRender(self, **kwargs):
+    def preFrameRender(self, **kwargs: Any) -> None:
         super().preFrameRender(**kwargs)
         if self.previewPipe is not None:
             self.previewPipe.wait()
         self.updateChunksize()
-        w, h = scale(self.scale, self.width, self.height, str)
+        w, h = scale(self.scale, self.width, self.height, str) # type: ignore
         self.video = FfmpegVideo(
-            inputPath=self.audioFile,
+            inputPath=self.audioFile, # type: ignore
             filter_=self.makeFfmpegFilter(),
-            width=w, height=h,
+            width=int(w), height=int(h),
             chunkSize=self.chunkSize,
             frameRate=int(self.settings.value("outputFrameRate")),
             parent=self.parent, component=self,
         )
 
-    def frameRender(self, frameNo):
+    def frameRender(self, frameNo: int) -> QtGui.QImage:
         if FfmpegVideo.threadError is not None:
             raise FfmpegVideo.threadError
-        return self.finalizeFrame(self.video.frame(frameNo))
+        frame = self.finalizeFrame(self.video.frame(frameNo)) # type: ignore
+        return frame # type: ignore
 
-    def postFrameRender(self):
-        closePipe(self.video.pipe)
+    def postFrameRender(self) -> None:
+        closePipe(self.video.pipe) # type: ignore
 
-    def getPreviewFrame(self):
+    def getPreviewFrame(self) -> Optional[QtGui.QImage]:
         genericPreview = self.settings.value("pref_genericPreview")
-        startPt = 0
+        startPt = 0.0
         if not genericPreview:
             inputFile = self.parent.lineEdit_audioFile.text()
             if not inputFile or not os.path.exists(inputFile):
-                return
+                return None
             duration = getAudioDuration(inputFile)
             if not duration:
-                return
+                return None
             startPt = duration / 3
 
         command = [
@@ -145,7 +147,7 @@ class Component(Component):
         command.extend(self.makeFfmpegFilter(preview=True, startPt=startPt))
         command.extend([
             '-an',
-            '-s:v', '%sx%s' % scale(self.scale, self.width, self.height, str),
+            '-s:v', '%sx%s' % scale(self.scale, self.width, self.height, str), # type: ignore
             '-codec:v', 'rawvideo', '-',
             '-frames:v', '1',
         ])
@@ -166,21 +168,23 @@ class Component(Component):
                 command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, bufsize=10**8
             )
-        byteFrame = self.previewPipe.stdout.read(self.chunkSize)
+        if not self.previewPipe:
+            return None
+        byteFrame = self.previewPipe.stdout.read(self.chunkSize) # type: ignore
         closePipe(self.previewPipe)
 
         frame = self.finalizeFrame(byteFrame)
         return frame
 
-    def makeFfmpegFilter(self, preview=False, startPt=0):
+    def makeFfmpegFilter(self, preview: bool = False, startPt: float = 0.0) -> List[str]:
         '''Makes final FFmpeg filter command'''
 
-        def getFilterComplexCommand():
+        def getFilterComplexCommand() -> str:
             '''Inner function that creates the final, complex part of the filter command'''
             nonlocal self
             genericPreview = self.settings.value("pref_genericPreview")
 
-            def getFilterComplexCommandForType():
+            def getFilterComplexCommandForType() -> str:
                 '''Determine portion of filter command that changes depending on selected type'''
                 nonlocal self
                 if preview:
@@ -188,19 +192,19 @@ class Component(Component):
                 else:
                     w, h = (self.width, self.height)
                 color = self.page.comboBox_color.currentText().lower()
-                
+
                 if self.filterType == 0:  # Spectrum
-                    if self.amplitude == 0:
+                    if self.amplitude == 0: # type: ignore
                         amplitude = 'sqrt'
-                    elif self.amplitude == 1:
+                    elif self.amplitude == 1: # type: ignore
                         amplitude = 'cbrt'
-                    elif self.amplitude == 2:
+                    elif self.amplitude == 2: # type: ignore
                         amplitude = '4thrt'
-                    elif self.amplitude == 3:
+                    elif self.amplitude == 3: # type: ignore
                         amplitude = '5thrt'
-                    elif self.amplitude == 4:
+                    elif self.amplitude == 4: # type: ignore
                         amplitude = 'lin'
-                    elif self.amplitude == 5:
+                    elif self.amplitude == 5: # type: ignore
                         amplitude = 'log'
                     filter_ = (
                         f'showspectrum=s={w}x{h}:'
@@ -212,19 +216,19 @@ class Component(Component):
                         'similarity=0.1:blend=0.5'
                     )
                 elif self.filterType == 1:  # Histogram
-                    if self.amplitude1 == 0:
+                    if self.amplitude1 == 0: # type: ignore
                         amplitude = 'log'
-                    elif self.amplitude1 == 1:
+                    elif self.amplitude1 == 1: # type: ignore
                         amplitude = 'lin'
-                    if self.display == 0:
+                    if self.display == 0: # type: ignore
                         display = 'log'
-                    elif self.display == 1:
+                    elif self.display == 1: # type: ignore
                         display = 'sqrt'
-                    elif self.display == 2:
+                    elif self.display == 2: # type: ignore
                         display = 'cbrt'
-                    elif self.display == 3:
+                    elif self.display == 3: # type: ignore
                         display = 'lin'
-                    elif self.display == 4:
+                    elif self.display == 4: # type: ignore
                         display = 'rlog'
                     filter_ = (
                         f'ahistogram=r={str(self.settings.value("outputFrameRate"))}:'
@@ -234,21 +238,21 @@ class Component(Component):
                         f'scale={display}'
                     )
                 elif self.filterType == 2:  # Vector Scope
-                    if self.amplitude2 == 0:
+                    if self.amplitude2 == 0: # type: ignore
                         amplitude = 'log'
-                    elif self.amplitude2 == 1:
+                    elif self.amplitude2 == 1: # type: ignore
                         amplitude = 'sqrt'
-                    elif self.amplitude2 == 2:
+                    elif self.amplitude2 == 2: # type: ignore
                         amplitude = 'cbrt'
-                    elif self.amplitude2 == 3:
+                    elif self.amplitude2 == 3: # type: ignore
                         amplitude = 'lin'
                     m = self.page.comboBox_mode.currentText()
                     filter_ = (
                         f'avectorscope=s={w}x{h}:'
-                        f'draw={"line" if self.draw else "dot"}:'
+                        f'draw={"line" if self.draw else "dot"}:' # type: ignore
                         f'm={m}:'
                         f'scale={amplitude}:'
-                        f'zoom={str(self.zoom)}'
+                        f'zoom={str(self.zoom)}' # type: ignore
                     )
                 elif self.filterType == 3:  # Musical Scale
                     filter_ = (
@@ -256,7 +260,7 @@ class Component(Component):
                         f's={w}x{h}:'
                         'count=30:'
                         'text=0:'
-                        f'tc={str(self.tc)},'
+                        f'tc={str(self.tc)},' # type: ignore
                         'colorkey=color=black:'
                         'similarity=0.1:blend=0.5'
                     )
@@ -273,21 +277,21 @@ class Component(Component):
                 return filter_
 
 
-            if self.filterType < 2:
+            if self.filterType < 2: # type: ignore
                 exampleSnd = exampleSound('freq')
-            elif self.filterType == 2 or self.filterType == 4:
+            elif self.filterType == 2 or self.filterType == 4: # type: ignore
                 exampleSnd = exampleSound('stereo')
-            elif self.filterType == 3:
+            elif self.filterType == 3: # type: ignore
                 exampleSnd = exampleSound('white')
-            compression = 'compand=gain=4,' if self.compress else ''
-            aformat = 'aformat=channel_layouts=mono,' if self.mono and self.filterType not in (2, 4) else ''
+            compression = 'compand=gain=4,' if self.compress else '' # type: ignore
+            aformat = 'aformat=channel_layouts=mono,' if self.mono and self.filterType not in (2, 4) else '' # type: ignore
             filter_ = getFilterComplexCommandForType()
-            hflip = 'hflip, ' if self.mirror else ''
+            hflip = 'hflip, ' if self.mirror else '' # type: ignore
             trim = 'trim=start=%s:end=%s, ' % ("{0:.3f}".format(startPt + 12), "{0:.3f}".format(startPt + 12.5)) if preview else ''
-            scale_ = 'scale=%sx%s' % scale(self.scale, self.width, self.height, str)
-            hue = ', hue=h=%s:s=10' % str(self.hue) if self.hue > 0 and self.filterType != 3 else ''
-            convolution = ', convolution=-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2' if self.filterType == 3 else ''
-            
+            scale_ = 'scale=%sx%s' % scale(self.scale, self.width, self.height, str) # type: ignore
+            hue = ', hue=h=%s:s=10' % str(self.hue) if self.hue > 0 and self.filterType != 3 else '' # type: ignore
+            convolution = ', convolution=-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2:-2 -1 0 -1 1 1 0 1 2' if self.filterType == 3 else '' # type: ignore
+
             return (
                 f"{exampleSnd if preview and genericPreview else '[0:a] '}"
                 f"{compression}{aformat}{filter_} [v1]; "
@@ -301,18 +305,18 @@ class Component(Component):
             '-map', '[v]',
         ]
 
-    def updateChunksize(self):
-        width, height = scale(self.scale, self.width, self.height, int)
+    def updateChunksize(self) -> bool:
+        width, height = scale(self.scale, self.width, self.height, int) # type: ignore
         oldChunkSize = int(self.chunkSize)
         self.chunkSize = 4 * width * height
         changed = self.chunkSize != oldChunkSize
         return changed
 
-    def finalizeFrame(self, imageData):
+    def finalizeFrame(self, imageData: bytes) -> QtGui.QImage:
         try:
             image = Image.frombytes(
                 'RGBA',
-                scale(self.scale, self.width, self.height, int),
+                scale(self.scale, self.width, self.height, int), # type: ignore
                 imageData
             )
             self._image = image
@@ -320,5 +324,5 @@ class Component(Component):
             image = self._image
 
         frame = BlankFrame(self.width, self.height)
-        frame.paste(image, box=(self.x, self.y))
+        frame.paste(image, box=(self.x, self.y)) # type: ignore
         return frame

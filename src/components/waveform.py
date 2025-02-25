@@ -1,10 +1,9 @@
 from PIL import Image
-from PyQt5 import QtGui, QtCore, QtWidgets
+from PyQt5 import QtWidgets
 from PyQt5.QtGui import QColor
 import os
-import math
-import subprocess
 import logging
+from typing import List, Dict, Any, Tuple, Optional
 
 from ..component import Component
 from ..toolkit.frame import BlankFrame, scale
@@ -21,9 +20,9 @@ class Component(Component):
     name = 'Waveform'
     version = '1.0.0'
 
-    def widget(self, *args):
+    def widget(self, *args: Any) -> None:
         super().widget(*args)
-        self._image = BlankFrame(self.width, self.height)
+        self._image: Image.Image = BlankFrame(self.width, self.height)
 
         self.page.lineEdit_color.setText('255,255,255')
 
@@ -49,45 +48,45 @@ class Component(Component):
             'x', 'y',
         ])
 
-    def previewRender(self):
+    def previewRender(self) -> QtGui.QImage:
         self.updateChunksize()
         frame = self.getPreviewFrame(self.width, self.height)
         if not frame:
-            return BlankFrame(self.width, self.height)
+            return QtGui.QImage()  # Return a null QImage if frame is None
         else:
             return frame
 
-    def preFrameRender(self, **kwargs):
+    def preFrameRender(self, **kwargs: Any) -> None:
         super().preFrameRender(**kwargs)
         self.updateChunksize()
-        w, h = scale(self.scale, self.width, self.height, str)
+        w, h = scale(self.scale, self.width, self.height, str) # type: ignore
         self.video = FfmpegVideo(
-            inputPath=self.audioFile,
+            inputPath=self.audioFile, # type: ignore
             filter_=self.makeFfmpegFilter(),
-            width=w, height=h,
+            width=int(w), height=int(h), # Ensure int
             chunkSize=self.chunkSize,
             frameRate=int(self.settings.value("outputFrameRate")),
             parent=self.parent, component=self, debug=True,
         )
 
-    def frameRender(self, frameNo):
+    def frameRender(self, frameNo: int) -> QtGui.QImage:
         if FfmpegVideo.threadError is not None:
             raise FfmpegVideo.threadError
-        return self.finalizeFrame(self.video.frame(frameNo))
+        return self.finalizeFrame(self.video.frame(frameNo)) # type: ignore
 
-    def postFrameRender(self):
-        closePipe(self.video.pipe)
+    def postFrameRender(self) -> None:
+        closePipe(self.video.pipe) # type: ignore
 
-    def getPreviewFrame(self, width, height):
+    def getPreviewFrame(self, width: int, height: int) -> Optional[QtGui.QImage]:
         genericPreview = self.settings.value("pref_genericPreview")
-        startPt = 0
+        startPt = 0.0
         if not genericPreview:
             inputFile = self.parent.lineEdit_audioFile.text()
             if not inputFile or not os.path.exists(inputFile):
-                return
+                return None
             duration = getAudioDuration(inputFile)
             if not duration:
-                return
+                return None
             startPt = duration / 3
             if startPt + 3 > duration:
                 startPt += startPt - 3
@@ -106,7 +105,7 @@ class Component(Component):
         command.extend(self.makeFfmpegFilter(preview=True, startPt=startPt))
         command.extend([
             '-an',
-            '-s:v', '%sx%s' % scale(self.scale, self.width, self.height, str),
+            '-s:v', '%sx%s' % scale(self.scale, self.width, self.height, str), # type: ignore
             '-codec:v', 'rawvideo', '-',
             '-frames:v', '1',
         ])
@@ -126,50 +125,53 @@ class Component(Component):
                 command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, bufsize=10**8
             )
-        byteFrame = pipe.stdout.read(self.chunkSize)
+        if not pipe:
+            return None
+
+        byteFrame = pipe.stdout.read(self.chunkSize) # type: ignore
         closePipe(pipe)
 
         frame = self.finalizeFrame(byteFrame)
         return frame
 
-    def makeFfmpegFilter(self, preview=False, startPt=0):
-        w, h = scale(self.scale, self.width, self.height, str)
-        if self.amplitude == 0:
+    def makeFfmpegFilter(self, preview: bool = False, startPt: float = 0.0) -> List[str]:
+        w, h = scale(self.scale, self.width, self.height, str) # type: ignore
+        if self.amplitude == 0: # type: ignore
             amplitude = 'lin'
-        elif self.amplitude == 1:
+        elif self.amplitude == 1: # type: ignore
             amplitude = 'log'
-        elif self.amplitude == 2:
+        elif self.amplitude == 2: # type: ignore
             amplitude = 'sqrt'
-        elif self.amplitude == 3:
+        elif self.amplitude == 3: # type: ignore
             amplitude = 'cbrt'
-        hexcolor = QColor(*self.color).name()
-        opacity = "{0:.1f}".format(self.opacity / 100)
+        hexcolor = QColor(*self.color).name() # type: ignore
+        opacity = "{0:.1f}".format(self.opacity / 100) # type: ignore
         genericPreview = self.settings.value("pref_genericPreview")
-        if self.mode < 3:
+        if self.mode < 3: # type: ignore
             filter_ = (
                 'showwaves='
                 f'r={str(self.settings.value("outputFrameRate"))}:'
                 f's={self.settings.value("outputWidth")}x{self.settings.value("outputHeight")}:'
-                f'mode={self.page.comboBox_mode.currentText().lower() if self.mode != 3 else "p2p"}:'
+                f'mode={self.page.comboBox_mode.currentText().lower() if self.mode != 3 else "p2p"}:' # type: ignore
                 f'colors={hexcolor}@{opacity}:scale={amplitude}'
             )
-        elif self.mode > 2:
+        elif self.mode > 2: # type: ignore
             filter_ = (
                 f'showfreqs=s={str(self.settings.value("outputWidth"))}x{str(self.settings.value("outputHeight"))}:'
-                f'mode={"line" if self.mode == 4 else "bar"}:'
+                f'mode={"line" if self.mode == 4 else "bar"}:' # type: ignore
                 f'colors={hexcolor}@{opacity}'
-                f":ascale={amplitude}:fscale={'log' if self.mono else 'lin'}"
+                f":ascale={amplitude}:fscale={'log' if self.mono else 'lin'}" # type: ignore
             )
 
         baselineHeight = int(self.height * (4 / 1080))
         return [
             '-filter_complex',
             f"{exampleSound('wave', extra='') if preview and genericPreview else '[0:a] '}"
-            f"{'compand=gain=4,' if self.compress else ''}"
-            f"{'aformat=channel_layouts=mono,' if self.mono and self.mode < 3 else ''}"
+            f"{'compand=gain=4,' if self.compress else ''}" # type: ignore
+            f"{'aformat=channel_layouts=mono,' if self.mono and self.mode < 3 else ''}" # type: ignore
             f"{filter_}"
-            f"{', drawbox=x=(iw-w)/2:y=(ih-h)/2:w=iw:h=%s:color=%s@%s' % (baselineHeight, hexcolor, opacity) if self.mode < 2 else ''}"
-            f"{', hflip' if self.mirror else''}"
+            f"{', drawbox=x=(iw-w)/2:y=(ih-h)/2:w=iw:h=%s:color=%s@%s' % (baselineHeight, hexcolor, opacity) if self.mode < 2 else ''}" # type: ignore
+            f"{', hflip' if self.mirror else''}" # type: ignore
             " [v1]; "
             '[v1] scale=%s:%s%s [v]' % (
                 w, h,
@@ -179,24 +181,26 @@ class Component(Component):
             '-map', '[v]',
         ]
 
-    def updateChunksize(self):
-        width, height = scale(self.scale, self.width, self.height, int)
+    def updateChunksize(self) -> None:
+        width, height = scale(self.scale, self.width, self.height, int) # type: ignore
         self.chunkSize = 4 * width * height
 
-    def finalizeFrame(self, imageData):
+    def finalizeFrame(self, imageData: bytes) -> QtGui.QImage:
         try:
             image = Image.frombytes(
                 'RGBA',
-                scale(self.scale, self.width, self.height, int),
+                scale(self.scale, self.width, self.height, int), # type: ignore
                 imageData
             )
             self._image = image
         except ValueError:
+            # use last good frame
             image = self._image
+
         if self.scale != 100 \
-                or self.x != 0 or self.y != 0:
+                or self.x != 0 or self.y != 0: # type: ignore
             frame = BlankFrame(self.width, self.height)
-            frame.paste(image, box=(self.x, self.y))
+            frame.paste(image, box=(self.x, self.y)) # type: ignore
         else:
             frame = image
         return frame

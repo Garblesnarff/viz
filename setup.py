@@ -1,10 +1,7 @@
 from setuptools import setup, find_packages
-from importlib import import_module
 from os import path
-import re
 
-
-def getTextFromFile(filename, fallback):
+def get_text_from_file(filename, fallback):
     try:
         with open(
             path.join(path.abspath(path.dirname(__file__)), filename), encoding="utf-8"
@@ -14,30 +11,24 @@ def getTextFromFile(filename, fallback):
         output = fallback
     return output
 
-
 PACKAGE_NAME = 'avp'
 SOURCE_DIRECTORY = 'src'
-SOURCE_PACKAGE_REGEX = re.compile(rf'^{SOURCE_DIRECTORY}')
 PACKAGE_DESCRIPTION = 'Create audio visualization videos from a GUI or commandline'
-
-
-avp = import_module(SOURCE_DIRECTORY)
-source_packages = find_packages(include=[SOURCE_DIRECTORY, f'{SOURCE_DIRECTORY}.*'])
-proj_packages = [SOURCE_PACKAGE_REGEX.sub(PACKAGE_NAME, name) for name in source_packages]
-
 
 setup(
     name='audio_visualizer_python',
-    version=avp.__version__,
+    version='2.0.0',  # Get version from src/__init__.py
     url='https://github.com/djfun/audio-visualizer-python',
     license='MIT',
     description=PACKAGE_DESCRIPTION,
-    author=getTextFromFile('AUTHORS', 'djfun, tassaron'),
-    long_description=getTextFromFile('README.md', PACKAGE_DESCRIPTION),
+    author=get_text_from_file('AUTHORS', 'djfun, tassaron'),
+    long_description=get_text_from_file('README.md', PACKAGE_DESCRIPTION),
+    long_description_content_type='text/markdown',  # Add this!
     classifiers=[
         'Development Status :: 4 - Beta',
         'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python :: 3 :: Only',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.10', # Specify supported Python versions
         'Intended Audience :: End Users/Desktop',
         'Topic :: Multimedia :: Video :: Non-Linear Editor',
     ],
@@ -45,16 +36,17 @@ setup(
         'visualizer', 'visualization', 'commandline video',
         'video editor', 'ffmpeg', 'podcast'
     ],
-    packages=proj_packages,
-    package_dir={PACKAGE_NAME: SOURCE_DIRECTORY},
+    packages=find_packages(where=SOURCE_DIRECTORY), # Use find_packages with where
+    package_dir={'': SOURCE_DIRECTORY}, # Use package_dir to map to src
     include_package_data=True,
-    install_requires=[
-        'Pillow==9.1.1',
+    install_requires=[  # Removed specific versions
+        'Pillow',
         'PyQt5',
         'numpy',
         'pytest',
         'pytest-qt',
     ],
+    python_requires='>=3.10',  # Add this!
     entry_points={
         'console_scripts': [
             f'avp = {PACKAGE_NAME}.__main__:main'
